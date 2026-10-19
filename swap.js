@@ -2,15 +2,16 @@
 // swap.js
 // Core swap execution logic.
 //
-// Each cycle now does TWO swaps:
-//   1. Forward: A -> B  (50% of A's current balance)
-//   2. Random delay (2-10 min)
+// Each cycle does TWO swaps:
+//   1. Forward: A -> B  (SWAP_PERCENT of A's current balance)
+//   2. Random delay (MIN_DELAY_SECONDS - MAX_DELAY_SECONDS)
 //   3. Return:  B -> A  (exact amount received from forward swap)
-//   4. Random delay (2-10 min)  <- handled by index.js after return
+//   4. Random delay <- handled by index.js after return
 //
 // Then index.js picks a fresh random pair for the next cycle.
 //
-// PYUSD added as 5th token alongside USDC, USDT, USDS, USDZ.
+// Tokens are read dynamically from config.tokens, so adding or
+// removing a token only requires editing config.js and .env.
 // ============================================================
 
 const { ethers } = require("ethers");
@@ -72,6 +73,31 @@ class SwapBot {
     this.decimalsCache = {};
   }
 
+  // Confirms the router and every token address actually holds contract
+  // code on the connected chain. Catches stale addresses left over from
+  // a previous network (e.g. Ethereum Sepolia addresses used on Arbitrum
+  // Sepolia) with a clear message instead of a confusing decode error.
+  async assertContractsDeployed() {
+    const targets = [
+      { label: "ROUTER_ADDRESS", address: config.routerAddress },
+      ...TOKEN_LIST.map(({ symbol, address }) => ({
+        label: `${symbol}_ADDRESS`,
+        address,
+      })),
+    ];
+
+    for (const { label, address } of targets) {
+      const code = await this.provider.getCode(address);
+      if (code === "0x") {
+        throw new Error(
+          `[STARTUP ERROR] No contract found at ${label} (${address}) on chain ID ${config.chainId}. ` +
+          `Check that this address belongs to the network in RPC_URL.`
+        );
+      }
+    }
+    logger.info(`Verified contract code exists for router and ${TOKEN_LIST.length} tokens`);
+  }
+
   async init() {
     const network = await this.provider.getNetwork();
     if (Number(network.chainId) !== config.chainId) {
@@ -82,6 +108,13 @@ class SwapBot {
 
     logger.info(`Wallet address: ${this.wallet.address}`);
     logger.info(`Connected to chain ID ${network.chainId} via ${config.rpcUrl}`);
+
+    const pairCount = TOKEN_LIST.length * (TOKEN_LIST.length - 1);
+    logger.info(
+      `Loaded ${TOKEN_LIST.length} tokens (${TOKEN_LIST.map((t) => t.symbol).join(", ")}) = ${pairCount} directional pairs`
+    );
+
+    await this.assertContractsDeployed();
 
     // Pre-fetch and cache decimals for all tokens once at startup.
     for (const { symbol } of TOKEN_LIST) {
@@ -235,7 +268,7 @@ class SwapBot {
 
   // One full swap cycle:
   //   1. Pick random pair A -> B
-  //   2. Swap 50% of A's balance -> B
+  //   2. Swap SWAP_PERCENT of A's balance -> B
   //   3. Wait random delay
   //   4. Swap exact received amount back B -> A
   //
@@ -257,8 +290,8 @@ class SwapBot {
       return { skipped: true, reason: "insufficient_balance" };
     }
 
-    // 50% of current balance
-    const percentBasisPoints = BigInt(Math.round(config.swapPercent * 100)); // 5000 for 50%
+    // SWAP_PERCENT of current balance (e.g. 5000 basis points for 50%)
+    const percentBasisPoints = BigInt(Math.round(config.swapPercent * 100));
     const forwardAmountRaw = (rawBalance * percentBasisPoints) / 10000n;
 
     if (forwardAmountRaw === 0n) {
