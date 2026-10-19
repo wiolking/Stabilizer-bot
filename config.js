@@ -2,9 +2,16 @@
 // config.js
 // Loads and validates environment variables. Fails fast and loud
 // at startup rather than failing confusingly mid-transaction.
+//
+// Tokens: to add a token, add its symbol to TOKEN_SYMBOLS below and
+// set <SYMBOL>_ADDRESS in .env (e.g. USDG -> USDG_ADDRESS).
 // ============================================================
 
 require("dotenv").config();
+const { getAddress } = require("ethers");
+
+// Every symbol here needs a matching <SYMBOL>_ADDRESS variable.
+const TOKEN_SYMBOLS = ["USDC", "USDT0", "USDS", "USDZ", "USDG", "PYUSD"];
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -19,7 +26,15 @@ function requireAddress(name) {
   if (!/^0x[a-fA-F0-9]{40}$/.test(value)) {
     throw new Error(`[CONFIG ERROR] ${name} is not a valid Ethereum address: ${value}`);
   }
-  return value;
+  // Validates the EIP-55 checksum (mixed-case addresses) and names the
+  // offending variable if a character was mistyped or mis-cased.
+  try {
+    return getAddress(value);
+  } catch (err) {
+    throw new Error(
+      `[CONFIG ERROR] ${name} has an invalid address checksum (a character is wrong or mis-cased): ${value}`
+    );
+  }
 }
 
 function requireNumber(name, { min = -Infinity, max = Infinity } = {}) {
@@ -34,6 +49,12 @@ function requireNumber(name, { min = -Infinity, max = Infinity } = {}) {
   return num;
 }
 
+// Builds { USDC: "0x...", USDT0: "0x...", ... } from <SYMBOL>_ADDRESS vars.
+const tokens = {};
+for (const symbol of TOKEN_SYMBOLS) {
+  tokens[symbol] = requireAddress(`${symbol}_ADDRESS`);
+}
+
 const config = {
   privateKey: requireEnv("PRIVATE_KEY"),
   rpcUrl: requireEnv("RPC_URL"),
@@ -41,13 +62,7 @@ const config = {
 
   routerAddress: requireAddress("ROUTER_ADDRESS"),
 
-  tokens: {
-    USDC: requireAddress("USDC_ADDRESS"),
-    USDT: requireAddress("USDT_ADDRESS"),
-    USDS: requireAddress("USDS_ADDRESS"),
-    USDZ: requireAddress("USDZ_ADDRESS"),
-    PYUSD: requireAddress("PYUSD_ADDRESS"),
-  },
+  tokens,
 
   swapPercent: requireNumber("SWAP_PERCENT", { min: 0.01, max: 100 }),
   minOutputPercent: requireNumber("MIN_OUTPUT_PERCENT", { min: 0, max: 100 }),
